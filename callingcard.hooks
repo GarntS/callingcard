@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# file:		callingcard
+# author:	garnt
+# date:		09/03/2018
+# desc:		mkinitcpio hook for callingcard smartcard module
+
+run_hook ()
+{
+	local tag encfile decfile attempts prompt badpassword poweroffmsg dev arg1 arg2 retcode password
+	tag="callingcard"
+
+	# only do something if the callingcard kernel argument was passed
+	if [ "x${callingcard}" != "x" ]; then
+		# define some variables for prompts and stuff
+		encfile="/rootkey_enc.pkcs1"
+		attempts="3"
+		prompt="[${tag}] Insert hardware key for access."
+		badpassword="[${tag}] Ensure you're using the correct hardware key."
+		poweroffmsg="[${tag}] ${attempts} failed attempts. Powering off..."
+
+		# the world's laziest way to split off colon-separated arguments
+		# from the kernel parameters passed to the module. this is one of:
+		#	<device>:<fs-type>:<path>:<encdevice>
+		#	<device>:<offset>:<size>:<encdevice>
+		# we distinguish between the two by whether or not the second argument
+		# has any non-numeric characters
+		dev="$(echo "${callingcard}" | cut -d: -f1)"
+		arg1="$(echo "${callingcard}" | cut -d: -f2)"
+		arg2="$(echo "${callingcard}" | cut -d: -f3)"
+		arg3="$(echo "${callingcard}" | cut -d: -f4)"
+
+		if poll_device "${dev}" "${rootdelay}"; then
+			case "${arg1}" in
+			# handle reading a keyfile from a filesystem
+			*[!0-9]*)
+				mkdir /mntkey
+				mount -r -t "${arg1}" "${dev}" /mntkey
+				dd if="/mntkey/${arg2}" of="${encfile}" >/dev/null 2>&1
+				umount /mntkey
+				rm -rf /mntkey
+				;;
+			# handle reading a keyfile from a block device
+			*)
+				dd if="${dev}" of="${encfile}" bs=1 skip="${arg1}" count="${arg2}" >/dev/null 2>&1
+				;;
+			esac
+		fi
+
+		# only if we successfully got the encrypted keyfile
+		if [ -f "${encfile}" ]; then
+			# Loop until we've decrypted or failed it twice
+			while true; do
+				echo -e "${prompt}"
+				# start the pcsc daemon so that smartcards actually do something
+				pcscd
+				# ham-fist decrypting the keyfile and passing it to cryptsetup without touching disk
+				if ! ( pkcs15-crypt --decipher --pkcs1 --raw --wait --input "${encfile}" | cryptsetup luksOpen "${arg3}" cryptroot --disable-locks --key-file=/dev/stdin ) ; then
+					# if it ain't work, decrement attempts and maybe poweroff
+					attempts=$(( ${attempts} - 1 ))
+					echo "[${tag}] ${attempts} attempts remaining."
+					sleep 2
+					# if attempts hits zero, spit the poweroff message and power off.
+					[ "${attempts}" == "0" ] && echo -e "\n${poweroffmsg}" && poweroff -f
+					echo -e "\n${badpassword}\n"
+				else
+					# hey, it worked! break
+					break
+				fi
+			done
+
+			# remove the encrypted keyfile off disk before moving to the next hook
+			rm -f "${encfile}"
+		else
+			echo "[${tag}] Encrypted keyfile could not be opened. Reverting to 'encrypt' hook."
+		fi
+	else
+		echo "[${tag}] callingcard was not defined as a kernel argument."
+	fi
+}

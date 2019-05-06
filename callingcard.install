@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# file:		callingcard
+# author:	garnt
+# date:		09/03/2018
+# desc:		Allows use of a pkcs15 ccid smartcard to encrypt keyfile for LUKS.
+
+build ()
+{
+	local mod
+
+	MODULES="dm_mod dm_crypt usb_common usbcore hid hid_rmi hid_generic mac_hid rmi_core usbhid"
+	FILES=""
+	SCRIPT=""
+
+	# add dm-crypt and all of its requirements now because we'll need it
+	add_module "dm-crypt"
+	if [[ $CRYPTO_MODULES ]]; then
+		for mod in $CRYPTO_MODULES; do
+			add_module "$mod"
+		done
+ 	else
+		add_all_modules "/crypto/"
+	fi
+
+	# make sure to add all of the static libraries required by our binaries
+	add_binary "/usr/lib/opensc-pkcs11.so"
+	add_binary "/usr/lib/libpcsclite.so"
+	add_binary "/usr/lib/pcsc/drivers/serial/libccidtwin.so"
+	add_file "/usr/lib/pcsc/drivers/ifd-ccid.bundle/Contents/Info.plist"
+	add_binary "/usr/lib/pcsc/drivers/ifd-ccid.bundle/Contents/Linux/libccid.so"
+	add_binary "/usr/lib/libfl.so"
+	add_binary "/usr/lib/libfl.so.2"
+	add_binary "/usr/lib/libfl.so.2.0.0"
+
+	# add some file prerequesites required by our binaries
+	add_file "/usr/lib/udev/rules.d/10-dm.rules"
+	add_file "/usr/lib/udev/rules.d/13-dm-disk.rules"
+	add_file "/usr/lib/udev/rules.d/95-dm-notify.rules"
+	add_file "/usr/lib/initcpio/udev/11-dm-initramfs.rules" "/usr/lib/udev/rules.d/11-dm-initramfs.rules"
+
+	# cryptsetup calls pthread_create(), which dlopen()s libgcc_s.so.1
+	add_binary "/usr/lib/libgcc_s.so.1"
+
+	# add all the actual binaries we use
+	add_binary "/usr/bin/pcscd"
+	add_binary "/usr/bin/pkcs15-crypt"
+	add_binary "/usr/bin/cryptsetup"
+	add_binary "/usr/bin/dmsetup"
+	add_runscript
+}
+
+help ()
+{
+cat<<HELPEOF
+	Allows use of a pkcs15 ccid smartcard to encrypt keyfile for LUKS.
+	It relies on the standard 'encrypt' hook to do the actual crypto ops,
+	and just provides a decrypted encryption key at '/rootkey.bin' for it to use
+
+	Kernel Parameters:
+	Two options are supported for acquiring the encrypted keyfile:
+		1) Using a file on a device:
+		   callingcard=<device>:<fs-type>:<path>:<encdevice>
+		2) Reading raw data from a block device:
+		   callingcard=<device>:<offset>:<size>:<encdevice>
+HELPEOF
+}
